@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
+	"html/template"
 	"io/ioutil"
 	"log"
 	"os"
@@ -102,82 +102,89 @@ func allIssues(client *github.Client, owner, repo string) ([]github.Issue, error
 }
 
 func printIssues(issues []github.Issue, milestones []string) error {
-	type stats struct {
-		open   int
-		closed int
-	}
-
 	var (
-		// milestone => component => issue
-		parsed   = map[string]map[string]Issues{}
-		msCounts = map[string]*stats{}
-		msURLs   = map[string]string{}
+		ms = parseIssues(issues)
+		sl = []*milestone{}
 	)
 
-	for i := range issues {
-		ms := issues[i].Milestone
+	for _, name := range milestones {
+		if _, ok := ms[name]; ok {
+			sl = append(sl, ms[name])
+		}
+	}
+
+	return tbl.Execute(os.Stdout, map[string]interface{}{
+		"milestones": sl,
+	})
+}
+
+func parseIssues(iss []github.Issue) map[string]*milestone {
+	var (
+		msMap    = map[string]*milestone{}
+		msCmpMap = map[*milestone]map[string]*component{}
+	)
+
+	for i := range iss {
+		issue := &iss[i]
+
+		if issue.Milestone == nil {
+			continue
+		}
+
+		ms := msMap[*issue.Milestone.Title]
 
 		if ms == nil {
-			continue
+			ms = &milestone{
+				Milestone:  issue.Milestone,
+				Components: components{},
+			}
+
+			msMap[*ms.Title] = ms
+			msCmpMap[ms] = map[string]*component{}
 		}
 
-		if parsed[*ms.Title] == nil {
-			parsed[*ms.Title] = map[string]Issues{}
-			msCounts[*ms.Title] = &stats{}
-			msURLs[*ms.Title] = *ms.HTMLURL
+		ms.Stats.Total++
+		if issue.ClosedAt != nil {
+			ms.Stats.Closed++
 		}
 
-		if issues[i].ClosedAt == nil {
-			msCounts[*ms.Title].open++
-		} else {
-			msCounts[*ms.Title].closed++
-		}
-
-		for j := range issues[i].Labels {
-			lbl := issues[i].Labels[j].String()
+		for j := range issue.Labels {
+			lbl := issue.Labels[j].String()
 
 			if strings.HasPrefix(lbl, "component: ") {
-				parsed[*ms.Title][lbl[11:]] = append(parsed[*ms.Title][lbl[11:]], issues[i])
+				name := lbl[11:]
+				cmp := msCmpMap[ms][name]
+
+				if cmp == nil {
+					cmp = &component{
+						Label:  &issue.Labels[j],
+						Name:   name,
+						Issues: issues{},
+					}
+
+					msCmpMap[ms][name] = cmp
+					ms.Components = append(ms.Components, cmp)
+				}
+
+				cmp.Issues = append(cmp.Issues, issue)
+
+				cmp.Stats.Total++
+				if issue.ClosedAt != nil {
+					cmp.Stats.Closed++
+				}
 			}
 		}
 	}
 
-	for _, ms := range milestones {
-		if _, ok := parsed[ms]; !ok {
-			continue
+	for _, ms := range msMap {
+		for _, cmp := range ms.Components {
+			sort.Sort(cmp.Issues)
 		}
 
-		fmt.Printf("### %s [%d/%d]\n", ms, msCounts[ms].closed, msCounts[ms].open+msCounts[ms].closed)
-		fmt.Printf("[Issues](%s)\n", msURLs[ms])
-
-		cmpKeys := sortedCmpKeys(parsed[ms])
-
-		for _, cmp := range cmpKeys {
-			issues := parsed[ms][cmp]
-			fmt.Printf("\n**%s**\n", cmp)
-
-			sort.Sort(issues)
-
-			for i := range issues {
-				closed := "[ ]"
-				if issues[i].ClosedAt != nil {
-					closed = "[x]"
-				}
-
-				fmt.Printf("- %s [[#%d]](%s) %s", closed, *issues[i].Number, *issues[i].HTMLURL, strings.TrimSpace(*issues[i].Title))
-
-				if issues[i].Assignee != nil {
-					fmt.Printf(" <a href=\"%s\"><img valign=\"middle\" height=25 width=25 src=\"%s\" /></a>", *issues[i].Assignee.HTMLURL, *issues[i].Assignee.AvatarURL)
-				}
-
-				fmt.Printf("\n")
-			}
-		}
-
-		fmt.Println("")
+		sort.Sort(ms.Components)
 	}
 
-	return nil
+	return msMap
 }
 
 func writeIssues(issues []github.Issue, file string) error {
@@ -205,11 +212,36 @@ func readIssues(file string) ([]github.Issue, error) {
 	return issues, nil
 }
 
-type Issues []github.Issue
+type milestone struct {
+	*github.Milestone
+	Components components
+	Stats      struct {
+		Closed int
+		Total  int
+	}
+}
 
-func (sl Issues) Len() int      { return len(sl) }
-func (sl Issues) Swap(i, j int) { sl[i], sl[j] = sl[j], sl[i] }
-func (sl Issues) Less(i, j int) bool {
+type component struct {
+	*github.Label
+	Name   string
+	Issues issues
+	Stats  struct {
+		Closed int
+		Total  int
+	}
+}
+
+type components []*component
+
+func (sl components) Len() int           { return len(sl) }
+func (sl components) Swap(i, j int)      { sl[i], sl[j] = sl[j], sl[i] }
+func (sl components) Less(i, j int) bool { return sl[i].Name < sl[j].Name }
+
+type issues []*github.Issue
+
+func (sl issues) Len() int      { return len(sl) }
+func (sl issues) Swap(i, j int) { sl[i], sl[j] = sl[j], sl[i] }
+func (sl issues) Less(i, j int) bool {
 	var (
 		iClosed   = sl[i].ClosedAt != nil
 		jClosed   = sl[j].ClosedAt != nil
@@ -228,17 +260,23 @@ func (sl Issues) Less(i, j int) bool {
 	return !iClosed
 }
 
-func sortedCmpKeys(mp map[string]Issues) []string {
-	var (
-		sl = make([]string, len(mp))
-		i  = 0
-	)
-
-	for k := range mp {
-		sl[i] = k
-		i++
-	}
-
-	sort.Strings(sl)
-	return sl
-}
+var tbl = template.Must(template.New("").Parse(`
+<table>
+	<thead>
+	</thead>
+	<tbody>{{ range $i, $ms := .milestones }}
+		<tr>
+			<td colspan="4"><h3>{{ $ms.Title }} [{{ $ms.Stats.Closed }}/{{ $ms.Stats.Total }}]</h3></td>
+		</tr>{{ range $j, $cmp := $ms.Components }}
+		<tr>
+			<td colspan="4"><h6>{{ $cmp.Name }} [{{ $cmp.Stats.Closed }}/{{ $cmp.Stats.Total }}]</h6></td>
+		</tr>{{ range $k, $issue := $cmp.Issues }}
+		<tr>
+			<td><a href="{{ $issue.HTMLURL }}">#{{ $issue.Number }}</a></td>
+			<td>{{ $issue.Title }}</td>
+			<td>{{ if $issue.Assignee }}<a href="{{ $issue.Assignee.HTMLURL }}"><img valign="middle" height="30" width="30" src="{{ $issue.Assignee.AvatarURL }} " /></a>{{ end }}</td>
+			<td>{{ if $issue.ClosedAt }}:white_check_mark:{{ end }}</td>
+		</tr>{{ end }}{{ end }}{{ end }}
+	</tbody>
+</table>
+`))
