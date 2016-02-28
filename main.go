@@ -118,24 +118,24 @@ func printIssues(issues []github.Issue, milestones []string) error {
 	})
 }
 
-func parseIssues(iss []github.Issue) map[string]*milestone {
+func parseIssues(ghIssues []github.Issue) map[string]*milestone {
 	var (
 		msMap    = map[string]*milestone{}
 		msCmpMap = map[*milestone]map[string]*component{}
 	)
 
-	for i := range iss {
-		issue := &iss[i]
+	for i := range ghIssues {
+		ghIssue := &ghIssues[i]
 
-		if issue.Milestone == nil {
+		if ghIssue.Milestone == nil {
 			continue
 		}
 
-		ms := msMap[*issue.Milestone.Title]
+		ms := msMap[*ghIssue.Milestone.Title]
 
 		if ms == nil {
 			ms = &milestone{
-				Milestone:  issue.Milestone,
+				Milestone:  ghIssue.Milestone,
 				Components: components{},
 			}
 
@@ -144,34 +144,49 @@ func parseIssues(iss []github.Issue) map[string]*milestone {
 		}
 
 		ms.Stats.Total++
-		if issue.ClosedAt != nil {
+		if ghIssue.ClosedAt != nil {
 			ms.Stats.Closed++
 		}
 
-		for j := range issue.Labels {
-			lbl := issue.Labels[j].String()
+		var (
+			cmpName  string
+			typeName string
+		)
+
+		for j := range ghIssue.Labels {
+			lbl := ghIssue.Labels[j].String()
 
 			if strings.HasPrefix(lbl, "component: ") {
-				name := lbl[11:]
-				cmp := msCmpMap[ms][name]
+				cmpName = lbl[11:]
+			}
 
-				if cmp == nil {
-					cmp = &component{
-						Label:  &issue.Labels[j],
-						Name:   name,
-						Issues: issues{},
-					}
+			if strings.HasPrefix(lbl, "type: ") {
+				typeName = lbl[6:]
+			}
+		}
 
-					msCmpMap[ms][name] = cmp
-					ms.Components = append(ms.Components, cmp)
+		if cmpName != "" {
+			cmp := msCmpMap[ms][cmpName]
+
+			if cmp == nil {
+				cmp = &component{
+					Name:   cmpName,
+					Issues: issues{},
 				}
 
-				cmp.Issues = append(cmp.Issues, issue)
+				msCmpMap[ms][cmpName] = cmp
+				ms.Components = append(ms.Components, cmp)
+			}
 
-				cmp.Stats.Total++
-				if issue.ClosedAt != nil {
-					cmp.Stats.Closed++
-				}
+			cmp.Issues = append(cmp.Issues, &issue{
+				Issue: ghIssue,
+				Type:  typeName,
+			})
+
+			cmp.Stats.Total++
+
+			if ghIssue.ClosedAt != nil {
+				cmp.Stats.Closed++
 			}
 		}
 	}
@@ -222,7 +237,6 @@ type milestone struct {
 }
 
 type component struct {
-	*github.Label
 	Name   string
 	Issues issues
 	Stats  struct {
@@ -231,13 +245,18 @@ type component struct {
 	}
 }
 
+type issue struct {
+	*github.Issue
+	Type string
+}
+
 type components []*component
 
 func (sl components) Len() int           { return len(sl) }
 func (sl components) Swap(i, j int)      { sl[i], sl[j] = sl[j], sl[i] }
 func (sl components) Less(i, j int) bool { return sl[i].Name < sl[j].Name }
 
-type issues []*github.Issue
+type issues []*issue
 
 func (sl issues) Len() int      { return len(sl) }
 func (sl issues) Swap(i, j int) { sl[i], sl[j] = sl[j], sl[i] }
@@ -266,13 +285,16 @@ var tbl = template.Must(template.New("").Parse(`
 	</thead>
 	<tbody>{{ range $i, $ms := .milestones }}
 		<tr>
-			<td colspan="4"><h3>{{ $ms.Title }} [{{ $ms.Stats.Closed }}/{{ $ms.Stats.Total }}]</h3></td>
+			<td colspan="3"><h3>{{ $ms.Title }}</h3></td>
+			<td colspan="2" align="center"><h3>{{ $ms.Stats.Closed }}/{{ $ms.Stats.Total }}</h3></td>
 		</tr>{{ range $j, $cmp := $ms.Components }}
 		<tr>
-			<td colspan="4"><h6>{{ $cmp.Name }} [{{ $cmp.Stats.Closed }}/{{ $cmp.Stats.Total }}]</h6></td>
+			<td colspan="3"><h6>{{ $cmp.Name }}</h6></td>
+			<td colspan="2" align="center"><h6>{{ $cmp.Stats.Closed }}/{{ $cmp.Stats.Total }}</h6></td>
 		</tr>{{ range $k, $issue := $cmp.Issues }}
 		<tr>
 			<td><a href="{{ $issue.HTMLURL }}">#{{ $issue.Number }}</a></td>
+			<td><kbd>{{ $issue.Type }}</kbd></td>
 			<td>{{ $issue.Title }}</td>
 			<td>{{ if $issue.Assignee }}<a href="{{ $issue.Assignee.HTMLURL }}"><img valign="middle" height="30" width="30" src="{{ $issue.Assignee.AvatarURL }} " /></a>{{ end }}</td>
 			<td>{{ if $issue.ClosedAt }}:white_check_mark:{{ end }}</td>
