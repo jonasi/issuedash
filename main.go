@@ -3,13 +3,16 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
 	"html/template"
 	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -143,14 +146,10 @@ func parseIssues(ghIssues []github.Issue) map[string]*milestone {
 			msCmpMap[ms] = map[string]*component{}
 		}
 
-		ms.Stats.Total++
-		if ghIssue.ClosedAt != nil {
-			ms.Stats.Closed++
-		}
-
 		var (
 			cmpName  string
 			typeName string
+			days     int
 		)
 
 		for j := range ghIssue.Labels {
@@ -163,6 +162,34 @@ func parseIssues(ghIssues []github.Issue) map[string]*milestone {
 			if strings.HasPrefix(lbl, "type: ") {
 				typeName = lbl[6:]
 			}
+
+			if strings.HasPrefix(lbl, "estimate: ") {
+				var (
+					str = strings.TrimSpace(lbl[10:])
+					m   = 0
+				)
+
+				if strings.HasSuffix(str, "d") {
+					m = 1
+				} else if strings.HasSuffix(str, "w") {
+					m = 5
+				}
+
+				if m > 0 {
+					num, _ := strconv.Atoi(str[:len(str)-1])
+
+					if num > 0 {
+						days += m * num
+					}
+				}
+			}
+		}
+
+		ms.Stats.Total++
+		if ghIssue.ClosedAt != nil {
+			ms.Stats.Closed++
+		} else {
+			ms.Stats.Days += days
 		}
 
 		if cmpName != "" {
@@ -181,12 +208,15 @@ func parseIssues(ghIssues []github.Issue) map[string]*milestone {
 			cmp.Issues = append(cmp.Issues, &issue{
 				Issue: ghIssue,
 				Type:  typeName,
+				Days:  days,
 			})
 
 			cmp.Stats.Total++
 
 			if ghIssue.ClosedAt != nil {
 				cmp.Stats.Closed++
+			} else {
+				cmp.Stats.Days += days
 			}
 		}
 	}
@@ -233,7 +263,16 @@ type milestone struct {
 	Stats      struct {
 		Closed int
 		Total  int
+		Days   int
 	}
+}
+
+func (m *milestone) CompletedBadge() string {
+	return "https://img.shields.io/badge/completed-" + url.QueryEscape(fmt.Sprintf("%d/%d", m.Stats.Closed, m.Stats.Total)) + "-blue.svg?style=flat-square"
+}
+
+func (m *milestone) DaysBadge() string {
+	return "https://img.shields.io/badge/remaining-" + url.QueryEscape(fmt.Sprintf("%dd", m.Stats.Days)) + "-green.svg?style=flat-square"
 }
 
 type component struct {
@@ -242,12 +281,22 @@ type component struct {
 	Stats  struct {
 		Closed int
 		Total  int
+		Days   int
 	}
+}
+
+func (c *component) CompletedBadge() string {
+	return "https://img.shields.io/badge/completed-" + url.QueryEscape(fmt.Sprintf("%d/%d", c.Stats.Closed, c.Stats.Total)) + "-blue.svg?style=flat-square"
+}
+
+func (c *component) DaysBadge() string {
+	return "https://img.shields.io/badge/remaining-" + url.QueryEscape(fmt.Sprintf("%dd", c.Stats.Days)) + "-green.svg?style=flat-square"
 }
 
 type issue struct {
 	*github.Issue
 	Type string
+	Days int
 }
 
 type components []*component
@@ -285,16 +334,19 @@ var tbl = template.Must(template.New("").Parse(`
 	</thead>
 	<tbody>{{ range $i, $ms := .milestones }}
 		<tr>
-			<td colspan="3"><h3>{{ $ms.Title }}</h3></td>
-			<td colspan="2" align="center"><h3>{{ $ms.Stats.Closed }}/{{ $ms.Stats.Total }}</h3></td>
+			<td colspan="6">
+				<h3>{{ $ms.Title }} <img hspace="5" align="right" src="{{ $ms.DaysBadge }}" /> <img hspace="5" align="right" src="{{ $ms.CompletedBadge }}" /></h3>
+			</td>
 		</tr>{{ range $j, $cmp := $ms.Components }}
 		<tr>
-			<td colspan="3"><h6>{{ $cmp.Name }}</h6></td>
-			<td colspan="2" align="center"><h6>{{ $cmp.Stats.Closed }}/{{ $cmp.Stats.Total }}</h6></td>
+			<td colspan="6">
+				<h6>{{ $cmp.Name }} <img hspace="5" align="right" src="{{ $cmp.DaysBadge }}" /> <img hspace="5" align="right" src="{{ $cmp.CompletedBadge }}" /></h6>
+			</td>
 		</tr>{{ range $k, $issue := $cmp.Issues }}
 		<tr>
 			<td><a href="{{ $issue.HTMLURL }}">#{{ $issue.Number }}</a></td>
 			<td><kbd>{{ $issue.Type }}</kbd></td>
+			<td>{{ if $issue.Days }}{{ $issue.Days }}d{{ end }}</td>
 			<td>{{ $issue.Title }}</td>
 			<td width="60">{{ if $issue.Assignee }}<a href="{{ $issue.Assignee.HTMLURL }}"><img valign="middle" height="30" width="30" src="{{ $issue.Assignee.AvatarURL }} " /></a>{{ end }}</td>
 			<td>{{ if $issue.ClosedAt }}☑️{{ end }}</td>
