@@ -296,8 +296,8 @@ var tbl = template.Must(template.New("").Parse(`
 			<td><a href="{{ $issue.HTMLURL }}">#{{ $issue.Number }}</a></td>
 			<td><kbd>{{ $issue.Type }}</kbd></td>
 			<td>{{ $issue.Title }}</td>
-			<td>{{ if $issue.Assignee }}<a href="{{ $issue.Assignee.HTMLURL }}"><img valign="middle" height="30" width="30" src="{{ $issue.Assignee.AvatarURL }} " /></a>{{ end }}</td>
-			<td>{{ if $issue.ClosedAt }}:white_check_mark:{{ end }}</td>
+			<td width="60">{{ if $issue.Assignee }}<a href="{{ $issue.Assignee.HTMLURL }}"><img valign="middle" height="30" width="30" src="{{ $issue.Assignee.AvatarURL }} " /></a>{{ end }}</td>
+			<td>{{ if $issue.ClosedAt }}☑️{{ end }}</td>
 		</tr>{{ end }}{{ end }}{{ end }}
 	</tbody>
 </table>
